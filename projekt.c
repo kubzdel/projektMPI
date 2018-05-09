@@ -3,7 +3,6 @@
 #include<pthread.h>
 #include <sys/types.h>
 #include <unistd.h>
-#include "stdafx.h"
 #define P 5
 #define J 20
 #define L 10
