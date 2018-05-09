@@ -7,7 +7,7 @@
 #define J 20
 #define L 10
 int status;
-queue *pocz,*s,*z;
+queue *pocz,*s;
 struct queue
 {
     int id;
@@ -18,7 +18,32 @@ void push(int id)
 {
 if(pocz==NULL)
 	{
-		s=new queue;
+		s=malloc(siezof (struct queue));
+		s->id=id;
+		s->next=NULL;
+		pocz=s;
+	}
+else
+	{
+		s=malloc(siezof (struct queue));
+		s->id=id;
+		s->next=pocz;
+		pocz=s;
+	}
+}
+
+int pop()
+{
+int item;
+if(pocz!=NULL)
+	{
+		s=pocz;
+		item=pocz->id;
+		pocz=s->next;
+		
+		
+
+		
 
 
 struct sectionRequest{
