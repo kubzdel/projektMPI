@@ -10,6 +10,7 @@
 #define P 5
 #define J 20
 #define L 10
+#define MSG_SIZE 1
 
 /*
 	status
@@ -22,14 +23,10 @@
 
 using namespace std;
 
-
-
-
-
-
 int status;
 int localClock;
 
+	int rank11 = -1;
 struct sectionRequest{
     int clock;
     int section;
@@ -44,9 +41,15 @@ void *communicationThread(void *)
 {
 	//while(1)
 	//{
-	sectionRequest request;
-	MPI_Bcast(&request, sizeof(struct sectionRequest), MPI_INT, 0, MPI_COMM_WORLD);
-	printf("%d",request.clock);
+	int request = rank11;
+    int sender = (rank11 - 1 == 0) ? 0 : 1;
+	if(rank11 == request)
+	{
+		MPI_Bcast(&request, MSG_SIZE, MPI_INT, sender, MPI_COMM_WORLD);
+	
+		printf("receiving %d %d\n",rank11, sender);
+	}
+	
 	//}
 }
 void initParallelThread()
@@ -74,22 +77,28 @@ int random(int min, int max)
     }
     return max ? (rand() % max + min) : min;
 }
-
 int main( int argc, char **argv )
 {
 std::priority_queue<sectionRequest, std::vector<sectionRequest>,
                               std::function<bool(sectionRequest, sectionRequest)>> pq(compare);
 	MPI_Init(&argc, &argv);
 	initParallelThread();
-	
-	int rank;
-	MPI_Comm_rank( MPI_COMM_WORLD, &rank );
+	MPI_Status status1;
+
+	MPI_Comm_rank( MPI_COMM_WORLD, &rank11 );
+    printf("My rank is %d\n", rank11);
 	status=0;
 	sleep(1);
 	sectionRequest hospitalPlace;
 	hospitalPlace.clock = localClock;
 	hospitalPlace.section = 1;
-	MPI_Bcast(&hospitalPlace, sizeof(struct sectionRequest), MPI_INT, 0, MPI_COMM_WORLD);
+	int sender = 1; //pierwszy watek wysyla
+	if(sender == rank11)
+	{
+		MPI_Bcast(&hospitalPlace.clock, MSG_SIZE, MPI_INT, sender, MPI_COMM_WORLD);
+		printf("sending to all %d\n", hospitalPlace.clock);
+	}
+		
 	status=1;
 	sleep(10);
 	MPI_Finalize();
