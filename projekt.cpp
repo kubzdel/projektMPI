@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <iostream>
 #include <queue>
+#include <functional>
 #define P 5
 #define J 20
 #define L 10
@@ -20,6 +21,11 @@
 */
 
 using namespace std;
+
+
+
+
+
 
 int status;
 
@@ -69,18 +75,14 @@ int random(int min, int max)
 
 int main( int argc, char **argv )
 {
-    priority_queue<sectionRequest> sectionRequests;
+std::priority_queue<sectionRequest, std::vector<sectionRequest>,
+                              std::function<bool(sectionRequest, sectionRequest)>> pq(compare);
 	//MPI_Init(&argc, &argv);
 	status=0;
 	//sleep(1,10);
 	status=1;
 		
-	struct queue transport_hospital_queue;
-
-
-	for(int i = 0 ; i< 10;i++){
-		printf("indeks %d, wartosc %d\n", i, pop());
-	}
+	
 	//MPI_Finalize();
 	
 }
