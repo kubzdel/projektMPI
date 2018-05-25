@@ -1,4 +1,4 @@
-//#include "mpi.h"
+#include "mpi.h"
 #include <stdio.h>
 #include<pthread.h>
 #include <sys/types.h>
@@ -28,7 +28,7 @@ using namespace std;
 
 
 int status;
-
+int localClock;
 
 struct sectionRequest{
     int clock;
@@ -39,11 +39,20 @@ struct sectionResponse{
     int status;
     int section;
 };
-void communicationThread();
+
+void *communicationThread(void *)
+{
+	//while(1)
+	//{
+	sectionRequest request;
+	MPI_Bcast(&request, sizeof(struct sectionRequest), MPI_INT, 0, MPI_COMM_WORLD);
+	printf("%d",request.clock);
+	//}
+}
 void initParallelThread()
 {
 	pthread_t pass_thread;
-	//pthread_create(&pass_thread, NULL, communicationThread, NULL);
+	pthread_create(&pass_thread, NULL, communicationThread, NULL);
 }
 
 bool compare(sectionRequest a,sectionRequest b)
@@ -51,13 +60,6 @@ bool compare(sectionRequest a,sectionRequest b)
    return (a.clock<b.clock);
 }
 
-void communicationThread()
-{
-	while(1)
-	{
-	//MPI_Recv(msg, MSG_SIZE, MPI_INT, MPI_ANY_SOURCE, MPI_ANY_TAG, MPI_COMM_WORLD, &status);
-	}
-}
 
 int random(int min, int max)
 {
@@ -77,12 +79,19 @@ int main( int argc, char **argv )
 {
 std::priority_queue<sectionRequest, std::vector<sectionRequest>,
                               std::function<bool(sectionRequest, sectionRequest)>> pq(compare);
-	//MPI_Init(&argc, &argv);
-	status=0;
-	//sleep(1,10);
-	status=1;
-		
+	MPI_Init(&argc, &argv);
+	initParallelThread();
 	
-	//MPI_Finalize();
+	int rank;
+	MPI_Comm_rank( MPI_COMM_WORLD, &rank );
+	status=0;
+	sleep(1);
+	sectionRequest hospitalPlace;
+	hospitalPlace.clock = localClock;
+	hospitalPlace.section = 1;
+	MPI_Bcast(&hospitalPlace, sizeof(struct sectionRequest), MPI_INT, 0, MPI_COMM_WORLD);
+	status=1;
+	sleep(10);
+	MPI_Finalize();
 	
 }
