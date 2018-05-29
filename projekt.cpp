@@ -20,7 +20,7 @@
 #define L 10
 #define MSG_SIZE 2
 #define MSG_HELLO 100
-#define MSG_REQUEST 200
+#define MSG_REQUEST_RELEASE 200
 #define MSG_RESPONSE 300
 #define MSG_RELEASE 400
 
@@ -62,9 +62,9 @@ struct sectionRequest{
     int clock;
     int section;
 	int id;
-	bool operator <(const sectionRequest & playerObj) const
+	bool operator <(const sectionRequest & other) const
 	{
-		return clock < playerObj.clock;
+		return (clock == other.clock ? id < other.id : clock < other.clock );
 	}
 };
 
@@ -73,9 +73,12 @@ struct sectionResponse{
     int section;
 };
 
+pthread_t *communication_thread = NULL;
+
 void signalHandler(int dummy)
 {
 	cout << "Signal " << dummy << " received in process " << processID << " pid: " << getpid() << endl;
+	pthread_cancel(*communication_thread);
 	MPI_Finalize();
 	exit(0);
 }
@@ -96,6 +99,20 @@ std::list<sectionRequest> hospitalList;
 std::list<sectionRequest> teleporterList;
 mutex hospital_mutex;
 mutex transport_mutex;
+mutex localclock_mutex;
+
+inline int max_int(int a, int b)
+{
+	return (a > b ? a : b);
+}
+
+void add_to_hospital_queue(sectionRequest request)
+{
+	hospital_mutex.lock();
+	hospitalList.push_back(request);
+	hospitalList.sort();
+	hospital_mutex.unlock();
+}
 
 void *communicationThread(void *)
 {
@@ -105,27 +122,27 @@ void *communicationThread(void *)
 	{
 		int msg[MSG_SIZE];
 		MPI_Status status;
-		MPI_Recv(msg, MSG_SIZE, MPI_INT, MPI_ANY_SOURCE, MSG_REQUEST, MPI_COMM_WORLD, &status);
+		MPI_Recv(msg, MSG_SIZE, MPI_INT, MPI_ANY_SOURCE, MSG_REQUEST_RELEASE, MPI_COMM_WORLD, &status);
 		
 		//mamy jeden Recv do request i release wiec i tak zawsze odbieramy tablice, chociaz przy release wystraczy jedna liczba
 		sectionRequest request;
 		request.clock = msg[SECTION];
+		localclock_mutex.lock();
+		localClock = max_int(request.clock, localClock);
+		localClock++;
+		localclock_mutex.unlock();
 		request.section = msg[ID];
 		request.id = status.MPI_SOURCE;
 		int id = request.id;
-		printf("Wątek %d otrzymał żądanie od wątku %d \n",processID,status.MPI_SOURCE);
+		printf("Wątek %d otrzymał żądanie od wątku %d (typ %d) \n",processID,status.MPI_SOURCE, status.MPI_TAG);
 		int messageType = status.MPI_TAG;
 
-		if(messageType == MSG_REQUEST)
+		if(messageType == MSG_REQUEST_RELEASE)
 		{
 			if(request.section == 1)
 			{
-				hospital_mutex.lock();
-				hospitalList.push_back(request);
-				hospitalList.sort();
-				hospital_mutex.unlock();
+				add_to_hospital_queue(request);
 			}
-
 			else
 			{
 				transport_mutex.lock();
@@ -152,14 +169,15 @@ void *communicationThread(void *)
 				default: break;
 			}
 		}
+		usleep(1000);
 	}
 }
 
 pthread_t initParallelThread()
 {
-	pthread_t newThread;
-	pthread_create(&newThread, NULL, communicationThread, NULL);
-	return newThread;
+	communication_thread = new pthread_t;
+	pthread_create(communication_thread, NULL, communicationThread, NULL);
+	return *communication_thread;
 }
 int random(int min, int max)
 {
@@ -186,7 +204,8 @@ std::ostream& operator<<(std::ostream& ostr, const std::list<sectionRequest>& li
 
 int main( int argc, char **argv )
 {
-	signal(SIGSEGV, signalHandler);
+	cout << hospitalList;
+	signal(SIGTSTP, signalHandler);
 	MPI_Init(&argc, &argv);
 	cout << "Main thread for process " << processID << " has PID " << getpid() << endl;
 
@@ -199,16 +218,20 @@ int main( int argc, char **argv )
 	printf("Proces z id = %d, czekanie %.2f sek. na rozpoczęcie.\n", processID, waitTime / 10.f);
 	usleep(waitTime*100 * 1000); //0.5s-2.5s
 	while(true){
-		localClock+=1;
 		sectionRequest hospitalPlace;
+		localclock_mutex.lock();
+		localClock++;
 		hospitalPlace.clock = localClock;
+		localclock_mutex.unlock();
 		hospitalPlace.section = 1;
+		hospitalPlace.id = processID;
+		add_to_hospital_queue(hospitalPlace);
 		int msg[] = {hospitalPlace.clock,hospitalPlace.section};
 		for(int i=0;i<world_size;i++)
 		{
 			if(i!=processID)
 			{
-				MPI_Send( msg, MSG_SIZE, MPI_INT, i, MSG_REQUEST, MPI_COMM_WORLD );
+				MPI_Send( msg, MSG_SIZE, MPI_INT, i, MSG_REQUEST_RELEASE, MPI_COMM_WORLD );
 				printf("Wątek %d wysłał żądanie do wątku %d  \n",processID,i);
 			}
 		}
@@ -220,9 +243,9 @@ int main( int argc, char **argv )
 			printf("Wątek %d otrzymał potwierdzenie nr %d, od wątku %d \n",processID,i+1,status.MPI_SOURCE);
 		}
 
-		hospital_mutex.lock();	//zeby nie pobrac danej przed dodaniem lub podczas sortowania
+		//hospital_mutex.lock();	//zeby nie pobrac danej przed dodaniem lub podczas sortowania
 		sectionRequest first_on_list = hospitalList.front(); 
-		hospital_mutex.unlock();
+		//hospital_mutex.unlock();
 		//w tym momencie otrzymanie żądania od innego procesu nie powinno zmienić
 		if(first_on_list.id == processID)
 		{
@@ -249,7 +272,6 @@ int main( int argc, char **argv )
 			cout << "Nie mam zgody na wejscie do sekcji krytycznej hospital. ID = " << processID << endl;
 
 			cout << "W mojej kolejce (ID=)"<< processID<<"\n" << hospitalList << endl << endl;
-
 		}
 
 		int waitTime = random(10,20);
