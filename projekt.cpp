@@ -75,6 +75,17 @@ void signalHandler(int dummy)
 	exit(0);
 }
 
+
+//do wyswietlania elementów kolejki
+std::ostream& operator<<(std::ostream& ostr, const std::list<sectionRequest>& list)
+{
+    for (auto &i : list) {
+        ostr <<  "\t mojeID=" << processID << "\tproc = " << i.id << " zegar=" << i.clock << endl;
+    }
+    return ostr;
+}
+
+
 mutex hospital_add_to_queue;
 void add_to_hospital_queue(sectionRequest request)
 {
@@ -106,7 +117,7 @@ void *communicationThread(void *)
 		localClock++;
 		localclock_mutex.unlock();
 		
-		request.section = msg[ID];
+		request.section = msg[SECTION];
 		request.id = status.MPI_SOURCE;
 		request.tag = msg[TAG];
 		int id = request.id;
@@ -131,7 +142,7 @@ void *communicationThread(void *)
 		}
 		else if(request.tag == MSG_RELEASE)
 		{
-			cout << processID <<": Usuwam proces nr " << request.id << " z kolejki " << (request.section == 0 ? "teleportera" : "szpitala") << endl;
+			cout << processID <<": Usuwam proces nr " << request.id << " z kolejki " << (request.section == HOSPITAL_STATUS ? "szpitala" : "teleportera") << endl;
 			//usun goscia z kolejki
 			switch(request.section)
 			{
@@ -139,11 +150,20 @@ void *communicationThread(void *)
 					hospital_mutex.lock();
 					hospitalList.remove_if([&request](sectionRequest item){ return item.id == request.id;});
 					hospital_mutex.unlock();
+
+					hospital_add_to_queue.lock();
 					if( hospitalList.front().id == processID )
 					{
-						cout << "W procesie " << processID << " następuje notify one" << endl;
+						cout << hospitalList << endl;
+						cout << "W procesie " << processID << " następuje notify one" << endl;//"  kolejka" << hospitalList << endl;
 						hospital_entrance_condition.notify_one();	//wake up main thread and let us enter hospital section
 					}
+					else
+					{
+						cout << "Proces " << processID << " : nie mogę notify one bo pierwszy w kolejce jest proces nr " << hospitalList.front().id << endl; 
+					}
+					hospital_add_to_queue.unlock();
+					
 					
 					break;
 				case TELEPORTER_STATUS: 
@@ -163,15 +183,6 @@ pthread_t initParallelThread()
 	communication_thread = new pthread_t;
 	pthread_create(communication_thread, NULL, communicationThread, NULL);
 	return *communication_thread;
-}
-
-//do wyswietlania elementów kolejki
-std::ostream& operator<<(std::ostream& ostr, const std::list<sectionRequest>& list)
-{
-    for (auto &i : list) {
-        ostr <<  "\t mojeID=" << processID << "\tproc = " << i.id << " zegar=" << i.clock << endl;
-    }
-    return ostr;
 }
 
 int main( int argc, char **argv )
@@ -238,7 +249,7 @@ int main( int argc, char **argv )
 		hospital_entrance_condition.wait(lock, []{ return hospitalList.front().id == processID; });
 
 		//jesteśmy w sekcji krytycznej szpitala, czekamy losowy czas
-		int waitTime = random(10,20);
+		int waitTime = random(2,3);
 		cout << "--------------------------->Wątek " << processID << ", czeka " << waitTime << " sek. w SEKCJI KRYTYCZNEJ HOSPITAL\n";
 		sleep(waitTime);
 		//usun swoje żądanie z sekcji krytycznej
@@ -248,7 +259,7 @@ int main( int argc, char **argv )
 			if(i!=processID)
 			{
 				//tu troche bezsensu wysylamy az dwa inty ale pozniej w odbieraniu bylby problem
-				msg[SECTION] = 1;
+				msg[SECTION] = HOSPITAL_STATUS;
 				msg[ID] = processID;
 				msg[TAG] = MSG_RELEASE;
 				MPI_Send(msg, MSG_SIZE, MPI_INT, i, MSG_REQUEST_RELEASE, MPI_COMM_WORLD );
