@@ -10,9 +10,10 @@
 #include <list>
 #include <mutex>
 #include <signal.h>
+#include <condition_variable>
 
-#include "structs.h"
 #include "helpers.cpp"
+#include "structs.h"
 
 #define P 5
 #define J 20
@@ -49,8 +50,8 @@ std::list<sectionRequest> teleporterList;
 mutex hospital_mutex;
 mutex transport_mutex;
 mutex localclock_mutex;
-pthread_mutex_t mutex;
-pthread_cond_t isFirstInQueue = PTHREAD_COND_INITIALIZER;
+condition_variable hospital_entrance_condition;
+
 pthread_t *communication_thread = NULL;
 
 void signalHandler(int dummy)
@@ -77,6 +78,10 @@ void add_to_hospital_queue(sectionRequest request)
 	hospital_mutex.lock();
 	hospitalList.push_back(request);
 	hospitalList.sort();
+	if( hospitalList.front().id == processID )
+	{
+		hospital_entrance_condition.notify_one();	//wake up main thread and let us enter hospital section
+	}
 	hospital_mutex.unlock();
 }
 
@@ -92,10 +97,12 @@ void *communicationThread(void *)
 		//mamy jeden Recv do request i release wiec i tak zawsze odbieramy tablice, chociaz przy release wystraczy jedna liczba
 		sectionRequest request;
 		request.clock = msg[SECTION];
+
 		localclock_mutex.lock();
 		localClock = max_int(request.clock, localClock);
 		localClock++;
 		localclock_mutex.unlock();
+		
 		request.section = msg[ID];
 		request.id = status.MPI_SOURCE;
 		int id = request.id;
@@ -126,10 +133,14 @@ void *communicationThread(void *)
 			switch(request.section)
 			{
 				case HOSPITAL_STATUS:
+					hospital_mutex.lock();
 					hospitalList.remove_if([&request](sectionRequest item){ return item.id == request.id;});
+					hospital_mutex.unlock();
 					break;
 				case TELEPORTER_STATUS: 
+					transport_mutex.lock();
 					teleporterList.remove_if([&request](sectionRequest item){ return item.id == request.id;});
+					transport_mutex.unlock();
 					break;
 				default: break;
 			}
@@ -206,13 +217,14 @@ int main( int argc, char **argv )
 			MPI_Recv(msg, MSG_SIZE, MPI_INT, MPI_ANY_SOURCE, MSG_RESPONSE, MPI_COMM_WORLD, &status);
 			printf("Wątek %d otrzymał potwierdzenie nr %d, od wątku %d \n",processID,i+1,status.MPI_SOURCE);
 		}
+		
+			//zeby nie pobrac danej przed dodaniem lub podczas sortowania
+		unique_lock<mutex> lock(hospital_mutex);;
+		hospital_entrance_condition.wait(lock, []{ return hospitalList.front().id == processID; });
 
-		//hospital_mutex.lock();	//zeby nie pobrac danej przed dodaniem lub podczas sortowania
-		sectionRequest first_on_list = hospitalList.front(); 
-		//hospital_mutex.unlock();
 		//w tym momencie otrzymanie żądania od innego procesu nie powinno zmienić
-		if(first_on_list.id == processID)
-		{
+		//if(hospitalList.front().id == processID)
+		//{
 			int waitTime = random(10,20);
 			cout << "--------------------------->Wątek " << processID << ", czeka " << waitTime << " sek. w SEKCJI KRYTYCZNEJ HOSPITAL\n";
 			sleep(waitTime);
@@ -231,14 +243,18 @@ int main( int argc, char **argv )
 			}
 			//u siebie
 			hospitalList.remove_if([](sectionRequest item){ return item.id == processID;});
-		}else{
-			//TO DO jak nie dostanie zgody na wejście
-			cout << "Nie mam zgody na wejscie do sekcji krytycznej hospital. ID = " << processID << endl;
 
-			cout << "W mojej kolejce (ID=)"<< processID<<"\n" << hospitalList << endl << endl;
-		}
+		// }else{
 
-		int waitTime = random(10,20);
+		// 	//TO DO jak nie dostanie zgody na wejście
+		// 	cout << "Nie mam zgody na wejscie do sekcji krytycznej hospital. ID = " << processID << endl;
+
+		// 	cout << "W mojej kolejce (ID=)"<< processID<<"\n" << hospitalList << endl << endl;
+		// }
+		
+		lock.unlock();
+
+		waitTime = random(10,20);
 		cout << "Wątek " << processID << ", czekam " << waitTime << " sek. na kolejne wejście do sekcji\n";
 		sleep(waitTime);
 	}

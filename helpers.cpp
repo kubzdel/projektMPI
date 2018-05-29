@@ -2,7 +2,9 @@
 #include <sys/stat.h> /* for open(2) */
 #include <fcntl.h> /* for open(2) */
 #include <unistd.h> /* for read(2), close(2) */
+
 #define DEVURANDOM "/dev/urandom"
+
 int random_int()
 {
     int rnum = 0;
