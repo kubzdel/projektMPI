@@ -206,7 +206,16 @@ int main( int argc, char **argv )
 {
 	cout << hospitalList;
 	signal(SIGTSTP, signalHandler);
-	MPI_Init(&argc, &argv);
+	int provided;
+	MPI_Init_thread(&argc, &argv, MPI_THREAD_MULTIPLE, &provided);
+
+	if (provided < MPI_THREAD_MULTIPLE)
+	{
+    	printf("ERROR: The MPI library does not have full thread support\n");
+    	MPI_Abort(MPI_COMM_WORLD, 1);
+		exit(0);
+	}
+
 	cout << "Main thread for process " << processID << " has PID " << getpid() << endl;
 
 	pthread_t communicationThread = initParallelThread();
