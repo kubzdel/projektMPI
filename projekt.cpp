@@ -9,11 +9,10 @@
 #include <functional>
 #include <list>
 #include <mutex>
-#include <sys/types.h> /* for open(2) */
-#include <sys/stat.h> /* for open(2) */
-#include <fcntl.h> /* for open(2) */
-#include <unistd.h> /* for read(2), close(2) */
 #include <signal.h>
+
+#include "structs.h"
+#include "helpers.cpp"
 
 #define P 5
 #define J 20
@@ -27,8 +26,6 @@
 //przy konwersji na msg
 #define SECTION 0
 #define ID 1
-
-#define DEVURANDOM "/dev/urandom"
 
 //do release zeby wiedziec ktorej sekcji on dotyczy
 #define HOSPITAL_STATUS 0
@@ -45,65 +42,34 @@ int status;
 int localClock=0;
 int world_size; 
 int processID = -1;
-
-int random_int()
-{
-    int rnum = 0;
-    int fd = open(DEVURANDOM, O_RDONLY);
-    if (fd != -1)
-    {
-        (void) read(fd, (void *)&rnum, sizeof(int));
-        (void) close(fd);
-    }
-    return rnum;
-}
-
-struct sectionRequest{
-    int clock;
-    int section;
-	int id;
-	bool operator <(const sectionRequest & other) const
-	{
-		return (clock == other.clock ? id < other.id : clock < other.clock );
-	}
-};
-
-struct sectionResponse{
-    int status;
-    int section;
-};
-
-pthread_t *communication_thread = NULL;
-
-void signalHandler(int dummy)
-{
-	cout << "Signal " << dummy << " received in process " << processID << " pid: " << getpid() << endl;
-	pthread_cancel(*communication_thread);
-	MPI_Finalize();
-	exit(0);
-}
-
-
-bool compare(sectionRequest a,sectionRequest b)
-{
-   return (a.clock<b.clock);
-}
-
-std::priority_queue<sectionRequest, std::vector<sectionRequest>,
-                              std::function<bool(sectionRequest, sectionRequest)>> hospitalQueue(compare);
-
-std::priority_queue<sectionRequest, std::vector<sectionRequest>,
-                              std::function<bool(sectionRequest, sectionRequest)>> teleporterQueue(compare);
+bool run = true;
 
 std::list<sectionRequest> hospitalList;  
 std::list<sectionRequest> teleporterList;
 mutex hospital_mutex;
 mutex transport_mutex;
 mutex localclock_mutex;
+pthread_mutex_t mutex;
+pthread_cond_t isFirstInQueue = PTHREAD_COND_INITIALIZER;
+pthread_t *communication_thread = NULL;
 
-inline int max_int(int a, int b)
+void signalHandler(int dummy)
 {
-	return (a > b ? a : b);
+	cout << "Odebrano sygnał zakończenia w procesie " << processID << ", z pid: " << getpid() << endl;
+	if(communication_thread != NULL)
+	{
+		pthread_cancel(*communication_thread);
+	}
+	int state;
+	MPI_Initialized( &state );
+	if(state){
+		cout << "Kończenie pracy MPI, proces nr " << processID << endl;
+		MPI_Finalize();
+	}else
+	{
+		cout << "Mpi nie był zainicjalizowany!\n";
+	}
+	exit(0);
 }
 
 void add_to_hospital_queue(sectionRequest request)
@@ -116,9 +82,8 @@ void add_to_hospital_queue(sectionRequest request)
 
 void *communicationThread(void *)
 {
-	cout << "Communication thread for process " << processID << " has PID " << getpid() << endl;
 	//mpi sie uruchamia wolniej niz tworzy sie watek wiec trzeba sprawdzac czy processID jest rozny od -1
-	while(1)
+	while(run)
 	{
 		int msg[MSG_SIZE];
 		MPI_Status status;
@@ -169,7 +134,7 @@ void *communicationThread(void *)
 				default: break;
 			}
 		}
-		usleep(1000);
+		usleep(1000); //1ms
 	}
 }
 
@@ -178,19 +143,6 @@ pthread_t initParallelThread()
 	communication_thread = new pthread_t;
 	pthread_create(communication_thread, NULL, communicationThread, NULL);
 	return *communication_thread;
-}
-int random(int min, int max)
-{
-    int tmp;
-    if (max>=min)
-        max-= min;
-    else
-    {
-        tmp= min - max;
-        min= max;
-        max= tmp;
-    }
-    return max ? (rand() % max + min) : min;
 }
 
 //do wyswietlania elementów kolejki
@@ -204,29 +156,32 @@ std::ostream& operator<<(std::ostream& ostr, const std::list<sectionRequest>& li
 
 int main( int argc, char **argv )
 {
-	cout << hospitalList;
-	signal(SIGTSTP, signalHandler);
+	signal(SIGTERM, signalHandler);
 	int provided;
+
 	MPI_Init_thread(&argc, &argv, MPI_THREAD_MULTIPLE, &provided);
 
 	if (provided < MPI_THREAD_MULTIPLE)
 	{
-    	printf("ERROR: The MPI library does not have full thread support\n");
+    	cout << "ERROR: MPI nie ma pełnego wsparcia dla wielowątkowości\n";
     	MPI_Abort(MPI_COMM_WORLD, 1);
 		exit(0);
 	}
 
-	cout << "Main thread for process " << processID << " has PID " << getpid() << endl;
-
-	pthread_t communicationThread = initParallelThread();
 	MPI_Comm_rank( MPI_COMM_WORLD, &processID );
 	MPI_Comm_size(MPI_COMM_WORLD, &world_size);
+
 	status=0;
+	
+	//czekaj na inicjalizacje
 	srand(random_int());
 	int waitTime = random(5, 25);
 	printf("Proces z id = %d, czekanie %.2f sek. na rozpoczęcie.\n", processID, waitTime / 10.f);
 	usleep(waitTime*100 * 1000); //0.5s-2.5s
-	while(true){
+	
+	pthread_t communicationThread = initParallelThread();
+	
+	while(run){
 		sectionRequest hospitalPlace;
 		localclock_mutex.lock();
 		localClock++;
@@ -286,8 +241,6 @@ int main( int argc, char **argv )
 		int waitTime = random(10,20);
 		cout << "Wątek " << processID << ", czekam " << waitTime << " sek. na kolejne wejście do sekcji\n";
 		sleep(waitTime);
-
-		//release
 	}
 
 		
