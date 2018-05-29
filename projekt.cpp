@@ -18,15 +18,17 @@
 #define P 5
 #define J 20
 #define L 10
-#define MSG_SIZE 2
+#define MSG_SIZE 3
 #define MSG_HELLO 100
 #define MSG_REQUEST_RELEASE 200
 #define MSG_RESPONSE 300
 #define MSG_RELEASE 400
+#define MSG_REQUEST 500
 
 //przy konwersji na msg
 #define SECTION 0
 #define ID 1
+#define TAG 2
 
 //do release zeby wiedziec ktorej sekcji on dotyczy
 #define HOSPITAL_STATUS 0
@@ -73,16 +75,17 @@ void signalHandler(int dummy)
 	exit(0);
 }
 
+mutex hospital_add_to_queue;
 void add_to_hospital_queue(sectionRequest request)
 {
-	hospital_mutex.lock();
+	hospital_add_to_queue.lock();
 	hospitalList.push_back(request);
 	hospitalList.sort();
-	if( hospitalList.front().id == processID )
-	{
-		hospital_entrance_condition.notify_one();	//wake up main thread and let us enter hospital section
-	}
-	hospital_mutex.unlock();
+	// if( hospitalList.front().id == processID )
+	// {
+	// 	hospital_entrance_condition.notify_one();	//wake up main thread and let us enter hospital section
+	// }
+	hospital_add_to_queue.unlock();
 }
 
 void *communicationThread(void *)
@@ -105,11 +108,11 @@ void *communicationThread(void *)
 		
 		request.section = msg[ID];
 		request.id = status.MPI_SOURCE;
+		request.tag = msg[TAG];
 		int id = request.id;
-		printf("Wątek %d otrzymał żądanie od wątku %d (typ %d) \n",processID,status.MPI_SOURCE, status.MPI_TAG);
-		int messageType = status.MPI_TAG;
+		printf("Wątek %d otrzymał żądanie od wątku %d (typ %d) \n",processID,status.MPI_SOURCE, request.tag);
 
-		if(messageType == MSG_REQUEST_RELEASE)
+		if(request.tag == MSG_REQUEST)
 		{
 			if(request.section == 1)
 			{
@@ -126,7 +129,7 @@ void *communicationThread(void *)
 			MPI_Send( msg, MSG_SIZE, MPI_INT, status.MPI_SOURCE, MSG_RESPONSE, MPI_COMM_WORLD );
 			printf("Wątek %d odesłał potwierdzenie do wątku %d \n",processID,status.MPI_SOURCE);
 		}
-		else if(messageType == MSG_RELEASE)
+		else if(request.tag == MSG_RELEASE)
 		{
 			cout << processID <<": Usuwam proces nr " << request.id << " z kolejki " << (request.section == 0 ? "teleportera" : "szpitala") << endl;
 			//usun goscia z kolejki
@@ -136,6 +139,12 @@ void *communicationThread(void *)
 					hospital_mutex.lock();
 					hospitalList.remove_if([&request](sectionRequest item){ return item.id == request.id;});
 					hospital_mutex.unlock();
+					if( hospitalList.front().id == processID )
+					{
+						cout << "W procesie " << processID << " następuje notify one" << endl;
+						hospital_entrance_condition.notify_one();	//wake up main thread and let us enter hospital section
+					}
+					
 					break;
 				case TELEPORTER_STATUS: 
 					transport_mutex.lock();
@@ -167,9 +176,9 @@ std::ostream& operator<<(std::ostream& ostr, const std::list<sectionRequest>& li
 
 int main( int argc, char **argv )
 {
+	//handler na ctrl+c
 	signal(SIGTERM, signalHandler);
 	int provided;
-
 	MPI_Init_thread(&argc, &argv, MPI_THREAD_MULTIPLE, &provided);
 
 	if (provided < MPI_THREAD_MULTIPLE)
@@ -201,7 +210,7 @@ int main( int argc, char **argv )
 		hospitalPlace.section = 1;
 		hospitalPlace.id = processID;
 		add_to_hospital_queue(hospitalPlace);
-		int msg[] = {hospitalPlace.clock,hospitalPlace.section};
+		int msg[] = {hospitalPlace.clock,hospitalPlace.section, MSG_REQUEST};
 		for(int i=0;i<world_size;i++)
 		{
 			if(i!=processID)
@@ -218,53 +227,46 @@ int main( int argc, char **argv )
 			printf("Wątek %d otrzymał potwierdzenie nr %d, od wątku %d \n",processID,i+1,status.MPI_SOURCE);
 		}
 		
+		cout << "process " << processID << " dostal wszystkie potwierdzenia, lista\n" << hospitalList << endl;
 			//zeby nie pobrac danej przed dodaniem lub podczas sortowania
-		unique_lock<mutex> lock(hospital_mutex);;
+		
+		//to jest dziwne ale nie moge zrobic tutaj hospital_mutex.lock() bo wait oczekuje na typ unique_lock
+		//unique lock jest wrapperem dla hospital_mutex, konstruktor od razu wykonuje hospital_mutex.lock()
+		unique_lock<mutex> lock(hospital_mutex); 
+
+		//czekamy na notify od release, chyba, że za pierwszym razem jesteśmy na początku kolejki
 		hospital_entrance_condition.wait(lock, []{ return hospitalList.front().id == processID; });
 
-		//w tym momencie otrzymanie żądania od innego procesu nie powinno zmienić
-		//if(hospitalList.front().id == processID)
-		//{
-			int waitTime = random(10,20);
-			cout << "--------------------------->Wątek " << processID << ", czeka " << waitTime << " sek. w SEKCJI KRYTYCZNEJ HOSPITAL\n";
-			sleep(waitTime);
-			//usun swoje żądanie z sekcji krytycznej
-			//u reszty procesów
-			for(int i=0;i<world_size;i++)
-			{
-				if(i!=processID)
-				{
-					//tu troche bezsensu wysylamy az dwa inty ale pozniej w odbieraniu bylby problem
-					msg[SECTION] = 1;
-					msg[ID] = processID;
-					MPI_Send(msg, MSG_SIZE, MPI_INT, i, MSG_RELEASE, MPI_COMM_WORLD );
-					printf("Wątek %d wysłał RELEASE do wątku %d  \n",processID,i);
-				}
-			}
-			//u siebie
-			hospitalList.remove_if([](sectionRequest item){ return item.id == processID;});
-
-		// }else{
-
-		// 	//TO DO jak nie dostanie zgody na wejście
-		// 	cout << "Nie mam zgody na wejscie do sekcji krytycznej hospital. ID = " << processID << endl;
-
-		// 	cout << "W mojej kolejce (ID=)"<< processID<<"\n" << hospitalList << endl << endl;
-		// }
-		
-		lock.unlock();
-
-		waitTime = random(10,20);
-		cout << "Wątek " << processID << ", czekam " << waitTime << " sek. na kolejne wejście do sekcji\n";
+		//jesteśmy w sekcji krytycznej szpitala, czekamy losowy czas
+		int waitTime = random(10,20);
+		cout << "--------------------------->Wątek " << processID << ", czeka " << waitTime << " sek. w SEKCJI KRYTYCZNEJ HOSPITAL\n";
 		sleep(waitTime);
+		//usun swoje żądanie z sekcji krytycznej
+		//u reszty procesów
+		for(int i=0;i<world_size;i++)
+		{
+			if(i!=processID)
+			{
+				//tu troche bezsensu wysylamy az dwa inty ale pozniej w odbieraniu bylby problem
+				msg[SECTION] = 1;
+				msg[ID] = processID;
+				msg[TAG] = MSG_RELEASE;
+				MPI_Send(msg, MSG_SIZE, MPI_INT, i, MSG_REQUEST_RELEASE, MPI_COMM_WORLD );
+				printf("Wątek %d wysłał RELEASE do wątku %d  \n",processID,i);
+			}
+		}
+		//u siebie
+		hospital_add_to_queue.lock();
+		hospitalList.remove_if([](sectionRequest item){ return item.id == processID;});
+		hospital_add_to_queue.unlock();
+		
+		lock.unlock(); // == hospital_mutex.unlock()
+
 	}
 
-		
 	printf("Wątek %d zakończył pracę \n",processID);
 	
 	pthread_cancel(communicationThread);
-	status=1;
-
 	MPI_Finalize();
 	return 0;
 }
