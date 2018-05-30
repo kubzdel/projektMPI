@@ -15,7 +15,7 @@
 #include "helpers.cpp"
 #include "structs.h"
 
-#define P 5
+#define P 2
 #define J 20
 #define L 10
 #define MSG_SIZE 3
@@ -85,6 +85,9 @@ std::ostream& operator<<(std::ostream& ostr, const std::list<sectionRequest>& li
     return ostr;
 }
 
+string invocation(){
+	return "[Proces " + std::to_string(processID) + " ] ";  
+}
 
 mutex hospital_add_to_queue;
 void add_to_hospital_queue(sectionRequest request)
@@ -93,6 +96,24 @@ void add_to_hospital_queue(sectionRequest request)
 	hospitalList.push_back(request);
 	hospitalList.sort();
 	hospital_mutex.unlock();
+}
+
+bool canEnterCriticalSection(std::list<sectionRequest> &sectionList, int maxProcessesInside)
+{
+	//cout << invocation() << "W sekcji krytycznej przy enter critical section \n" << sectionList << endl;
+	int elementCount = 1;
+	for(auto &item : sectionList)
+	{
+		if(elementCount > maxProcessesInside)
+		{
+			return false;
+		}
+		if(item.id == processID)
+		{
+			return true;
+		}
+		elementCount++;
+	}
 }
 
 void *communicationThread(void *)
@@ -116,8 +137,8 @@ void *communicationThread(void *)
 		request.section = msg[SECTION];
 		request.id = status.MPI_SOURCE;
 		request.tag = msg[TAG];
-		printf("Wątek %d otrzymał żądanie od wątku %d (typ %d) \n",processID,status.MPI_SOURCE, request.tag);
-
+		cout << invocation() << "otrzymał żądanie od procesu " << status.MPI_SOURCE << " (typ" << request.tag << ")" << endl; 
+		
 		if(request.tag == MSG_REQUEST)
 		{
 			if(request.section == 1)
@@ -133,28 +154,25 @@ void *communicationThread(void *)
 			}
 
 			MPI_Send( msg, MSG_SIZE, MPI_INT, status.MPI_SOURCE, MSG_RESPONSE, MPI_COMM_WORLD );
-			printf("Wątek %d odesłał potwierdzenie do wątku %d \n",processID,status.MPI_SOURCE);
+			cout << invocation << " odesłał potwierdzenie do procesu " << status.MPI_SOURCE << endl;
 		}
 		else if(request.tag == MSG_RELEASE)
 		{
-			cout << processID <<": Usuwam proces nr " << request.id << " z kolejki " << (request.section == HOSPITAL_STATUS ? "szpitala" : "teleportera") << endl;
+			cout << invocation() <<" usuwam proces nr " << request.id << " z kolejki " << (request.section == HOSPITAL_STATUS ? "szpitala." : "teleportera.") << endl;
 			//usun goscia z kolejki
 			switch(request.section)
 			{
 				case HOSPITAL_STATUS:
 					hospital_mutex.lock();
 					hospitalList.remove_if([&request](sectionRequest item){ return item.id == request.id;});
-					
-
-					if( hospitalList.front().id == processID )
+					if( canEnterCriticalSection(hospitalList, P) )
 					{
-						cout << hospitalList << endl;
-						cout << "W procesie " << processID << " następuje notify one" << "  kolejka" << hospitalList << endl;
+						cout << invocation() << " mam zezwolenie na wejście do sekcji krytycznej szpitala" << endl;
 						hospital_entrance_condition.notify_one();	//wake up main thread and let us enter hospital section
 					}
 					else
 					{
-						cout << "Proces " << processID << " : nie mogę notify one bo pierwszy w kolejce jest proces nr " << hospitalList.front().id << endl; 
+						cout << invocation() << "nie mogę wejść do sekcji krytycznej" << endl; 
 					}
 					hospital_mutex.unlock();
 					
@@ -200,7 +218,7 @@ int main( int argc, char **argv )
 	//czekaj na inicjalizacje
 	srand(random_int());
 	int waitTime = random(5, 25);
-	printf("Proces z id = %d, czekanie %.2f sek. na rozpoczęcie.\n", processID, waitTime / 10.f);
+	printf("%s czekam  %.2f sek. na rozpoczęcie.\n", invocation().c_str(), waitTime / 10.f);
 	usleep(waitTime*100 * 1000); //0.5s-2.5s
 	
 	pthread_t communicationThread = initParallelThread();
@@ -223,7 +241,7 @@ int main( int argc, char **argv )
 			if(i!=processID)
 			{
 				MPI_Send( msg, MSG_SIZE, MPI_INT, i, MSG_REQUEST_RELEASE, MPI_COMM_WORLD );
-				printf("Wątek %d wysłał żądanie do wątku %d  \n",processID,i);
+				cout << invocation() << " wysyłam żądanie do procesu " << i << endl;
 			}
 		}
 
@@ -231,10 +249,10 @@ int main( int argc, char **argv )
 		{
 			MPI_Status status;
 			MPI_Recv(msg, MSG_SIZE, MPI_INT, MPI_ANY_SOURCE, MSG_RESPONSE, MPI_COMM_WORLD, &status);
-			printf("Wątek %d otrzymał potwierdzenie nr %d, od wątku %d \n",processID,i+1,status.MPI_SOURCE);
+			cout << invocation() << "otrzymałem potwierdzenie nr " << i+1 << " od procesu " << status.MPI_SOURCE << endl;
 		}
 		
-		cout << "process " << processID << " dostal wszystkie potwierdzenia, lista\n" << hospitalList << endl;
+		//cout << invocation() << " dostałem wszystkie potwierdzenia, lista\n" << hospitalList << endl;
 			//zeby nie pobrac danej przed dodaniem lub podczas sortowania
 		
 		//to jest dziwne ale nie moge zrobic tutaj hospital_mutex.lock() bo wait oczekuje na typ unique_lock
@@ -242,12 +260,13 @@ int main( int argc, char **argv )
 		unique_lock<mutex> lock(hospital_mutex); 
 
 		//czekamy na notify od release, chyba, że za pierwszym razem jesteśmy na początku kolejki
-		hospital_entrance_condition.wait(lock, []{ return hospitalList.front().id == processID; });
+		hospital_entrance_condition.wait(lock, []{return canEnterCriticalSection(hospitalList, P); });
 
 		//jesteśmy w sekcji krytycznej szpitala, czekamy losowy czas
-		int waitTime = random(2,3);
-		cout << "--------------------------->Wątek " << processID << ", czeka " << waitTime << " sek. w SEKCJI KRYTYCZNEJ HOSPITAL\n";
+		int waitTime = random(10,20);
+		cout << "--------------------------->" << invocation() << " czekam " << waitTime << " sek. w SEKCJI KRYTYCZNEJ HOSPITAL\n";
 		sleep(waitTime);
+		cout << invocation() << " wyszedłem z sekcji krytycznej\n\n"; 
 		//usun swoje żądanie z sekcji krytycznej
 		//u reszty procesów
 		for(int i=0;i<world_size;i++)
@@ -258,7 +277,7 @@ int main( int argc, char **argv )
 				msg[SECTION] = HOSPITAL_STATUS;
 				msg[TAG] = MSG_RELEASE;
 				MPI_Send(msg, MSG_SIZE, MPI_INT, i, MSG_REQUEST_RELEASE, MPI_COMM_WORLD );
-				printf("Wątek %d wysłał RELEASE do wątku %d  \n",processID,i);
+				//printf("Wątek %d wysłał RELEASE do wątku %d  \n",processID,i);
 			}
 		}
 		//u siebie
@@ -268,7 +287,7 @@ int main( int argc, char **argv )
 
 	}
 
-	printf("Wątek %d zakończył pracę \n",processID);
+	cout << invocation() << " zakończyłem pracę\n";
 	
 	pthread_cancel(communicationThread);
 	MPI_Finalize();
