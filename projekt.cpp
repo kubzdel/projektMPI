@@ -341,7 +341,52 @@ int main( int argc, char **argv )
 		waitTime = random(3,7);
 		cout << "--------------------------->" << invocation() << "czekam " << waitTime << " sek. w SEKCJI KRYTYCZNEJ HOSPITAL\n";
 		sleep(waitTime);
-		cout << invocation() << "Wyszedłem z sekcji krytycznej SZPITAL\n\n"; 
+
+		prepare_section_request(TELEPORTER_STATUS, msg);
+		for(int i=0;i<world_size;i++)
+		{
+			if(i!=processID)
+			{
+				MPI_Send( msg, MSG_SIZE, MPI_INT, i, MSG_REQUEST_RELEASE, MPI_COMM_WORLD );
+				cout << invocation() << " wysyłam żądanie TELEPORTERA do procesu " << i << endl;
+			}
+		}
+
+		for(int i=0;i<world_size-1;i++)
+		{
+			MPI_Status status;
+			MPI_Recv(msg, MSG_SIZE, MPI_INT, MPI_ANY_SOURCE, MSG_RESPONSE, MPI_COMM_WORLD, &status);
+			cout << invocation() << "otrzymałem potwierdzenie TELEPORTERA nr " << i+1 << " od procesu " << status.MPI_SOURCE << endl;
+		}
+
+		unique_lock<mutex> t_lock2(teleporter_mutex); 
+		//czekamy na notify od release, chyba, że za pierwszym razem jesteśmy na początku kolejki
+		teleporter_entrance_condition.wait(t_lock2, []{return canEnterCriticalSection(teleporterList, L); });
+		t_lock2.unlock(); // zostawiamy teleporter
+
+		//jesteśmy w sekcji krytycznej szpitala i teleportera, czekamy losowy czas w teleporterze
+		
+		waitTime = random(3,7);
+		cout << "--------------------------->" << invocation() << " czekam " << waitTime << " sek. w SEKCJI KRYTYCZNEJ TELEPORTERA\n";
+		sleep(waitTime);
+		cout << invocation() << "Wyszedłem z sekcji krytycznej TELEPORTERA do szpitala\n";
+		//usun swoje żądanie z sekcji krytycznej
+		//u reszty procesów
+		for(int i=0;i<world_size;i++)
+		{
+			if(i!=processID)
+			{
+				//tu troche bezsensu wysylamy az dwa inty ale pozniej w odbieraniu bylby problem
+				msg[SECTION] = TELEPORTER_STATUS;
+				msg[TAG] = MSG_RELEASE;
+				MPI_Send(msg, MSG_SIZE, MPI_INT, i, MSG_REQUEST_RELEASE, MPI_COMM_WORLD );
+				//printf("Wątek %d wysłał RELEASE do wątku %d  \n",processID,i);
+			}
+		}
+		teleporter_mutex.lock();
+		teleporterList.remove_if([](sectionRequest item){ return item.id == processID;});
+		teleporter_mutex.unlock();
+		cout << invocation() << "Wyszedłem z sekcji krytycznej TEleporter SZPITAL\n\n"; 
 
 
 		//usun swoje żądanie z sekcji krytycznej
@@ -361,6 +406,7 @@ int main( int argc, char **argv )
 		hospital_mutex.lock();
 		hospitalList.remove_if([](sectionRequest item){ return item.id == processID;});
 		hospital_mutex.unlock();
+			cout << invocation() << "Wyszedłem z sekcji krytycznej porter SZPITAL\n\n"; 
 		// // == hospital_mutex.unlock()
 
 	}
